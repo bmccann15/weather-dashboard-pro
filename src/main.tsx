@@ -1,210 +1,401 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { ChevronLeft, ChevronRight, Home, Clock3, MapPin, Settings, Plus, Trash2, Search } from 'lucide-react';
+import { CloudRain, Droplets, MapPin, Plus, RefreshCw, Snowflake, Sun, Trash2, Umbrella } from 'lucide-react';
 import './styles.css';
-import type { ChartMetric, HourlyPoint, Location, RiskLevel } from './types';
-import { fetchWeather, findBestOutdoorWindow, formatWindDirection, fullHourLabel, hourLabel, riskFromWetBulb, riskIcon, riskLabel, searchLocations } from './weather';
-import { loadLocations, saveLocations } from './storage';
 
-const chartLabels: Record<ChartMetric, string> = {
-  temp: 'Temperature',
-  feelsLike: 'Feels Like',
-  wetBulb: 'Wet Bulb',
-  dewpoint: 'Dewpoint',
-  humidity: 'Humidity',
-  windSpeed: 'Wind',
-  uv: 'UV Index',
+type Location = {
+  id: string;
+  name: string;
+  latitude: number;
+  longitude: number;
 };
+
+type HourPoint = {
+  time: string;
+  temp: number;
+  dewPoint: number;
+  humidity: number;
+  precipProb: number;
+  precip: number;
+  rain: number;
+  showers: number;
+  snow: number;
+  weatherCode: number;
+};
+
+type DayPoint = {
+  date: string;
+  tempMax: number;
+  tempMin: number;
+  precipSum: number;
+  rainSum: number;
+  showersSum: number;
+  snowSum: number;
+  precipProbMax: number;
+  weatherCode: number;
+};
+
+type WeatherData = {
+  location: Location;
+  fetchedAt: string;
+  timezone: string;
+  hourly: HourPoint[];
+  daily: DayPoint[];
+};
+
+const DEFAULT_LOCATIONS: Location[] = [
+  { id: 'groton-ma', name: 'Groton, MA', latitude: 42.6112, longitude: -71.5745 },
+  { id: 'concord-ma', name: 'Concord, MA', latitude: 42.4604, longitude: -71.3489 },
+];
+
+const STORAGE_KEY = 'weather-dashboard-pro-locations-v2';
+
+function loadLocations(): Location[] {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return DEFAULT_LOCATIONS;
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) && parsed.length ? parsed : DEFAULT_LOCATIONS;
+  } catch {
+    return DEFAULT_LOCATIONS;
+  }
+}
+
+function saveLocations(locations: Location[]) {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(locations));
+}
+
+function f(c: number) {
+  return Math.round((c * 9) / 5 + 32);
+}
+
+function inches(mm: number) {
+  return mm / 25.4;
+}
+
+function formatInches(mm: number) {
+  const value = inches(mm);
+  if (value < 0.005) return '0.00"';
+  return `${value.toFixed(2)}"`;
+}
+
+function weatherLabel(code: number) {
+  if ([0].includes(code)) return 'Clear';
+  if ([1, 2, 3].includes(code)) return 'Clouds';
+  if ([45, 48].includes(code)) return 'Fog';
+  if ([51, 53, 55, 56, 57].includes(code)) return 'Drizzle';
+  if ([61, 63, 65, 66, 67, 80, 81, 82].includes(code)) return 'Rain';
+  if ([71, 73, 75, 77, 85, 86].includes(code)) return 'Snow';
+  if ([95, 96, 99].includes(code)) return 'Storms';
+  return 'Weather';
+}
+
+function precipRisk(prob: number, amountMm: number, snowMm: number) {
+  if (snowMm > 2) return { label: 'Snow likely', level: 'snow' };
+  if (amountMm >= 5 || prob >= 80) return { label: 'Wet', level: 'high' };
+  if (amountMm >= 1 || prob >= 50) return { label: 'Showers possible', level: 'medium' };
+  return { label: 'Mostly dry', level: 'low' };
+}
+
+function describeNextRain(hours: HourPoint[]) {
+  const next = hours.slice(0, 12).find(h => h.precipProb >= 50 || h.precip >= 0.5 || h.snow >= 0.5);
+  if (!next) return 'Mostly dry for the next 12 hours';
+  const diffHours = Math.max(0, Math.round((new Date(next.time).getTime() - Date.now()) / 36e5));
+  if (next.snow >= 0.5) return diffHours <= 1 ? 'Snow possible soon' : `Snow possible in ~${diffHours} hours`;
+  return diffHours <= 1 ? 'Rain possible soon' : `Rain possible in ~${diffHours} hours`;
+}
+
+function bestDryWindow(hours: HourPoint[]) {
+  const daylight = hours.slice(0, 24).filter(h => {
+    const hour = new Date(h.time).getHours();
+    return hour >= 7 && hour <= 21;
+  });
+
+  let bestStart = 0;
+  let bestLen = 0;
+  let currentStart = 0;
+  let currentLen = 0;
+
+  daylight.forEach((h, i) => {
+    const dry = h.precipProb < 35 && h.precip < 0.3 && h.snow < 0.3;
+    if (dry) {
+      if (currentLen === 0) currentStart = i;
+      currentLen += 1;
+      if (currentLen > bestLen) {
+        bestLen = currentLen;
+        bestStart = currentStart;
+      }
+    } else {
+      currentLen = 0;
+    }
+  });
+
+  if (bestLen < 2) return 'No clear dry window';
+  const start = new Date(daylight[bestStart].time);
+  const end = new Date(daylight[bestStart + bestLen - 1].time);
+  const opts: Intl.DateTimeFormatOptions = { hour: 'numeric' };
+  return `${start.toLocaleTimeString([], opts)}–${end.toLocaleTimeString([], opts)}`;
+}
+
+async function fetchWeather(location: Location): Promise<WeatherData> {
+  const params = new URLSearchParams({
+    latitude: String(location.latitude),
+    longitude: String(location.longitude),
+    timezone: 'auto',
+    temperature_unit: 'celsius',
+    forecast_days: '7',
+    hourly: [
+      'temperature_2m',
+      'relative_humidity_2m',
+      'dew_point_2m',
+      'precipitation_probability',
+      'precipitation',
+      'rain',
+      'showers',
+      'snowfall',
+      'weather_code',
+    ].join(','),
+    daily: [
+      'temperature_2m_max',
+      'temperature_2m_min',
+      'precipitation_sum',
+      'rain_sum',
+      'showers_sum',
+      'snowfall_sum',
+      'precipitation_probability_max',
+      'weather_code',
+    ].join(','),
+  });
+
+  const response = await fetch(`https://api.open-meteo.com/v1/forecast?${params}`);
+  if (!response.ok) throw new Error(`Forecast failed for ${location.name}`);
+  const data = await response.json();
+
+  const hourly: HourPoint[] = data.hourly.time.map((time: string, i: number) => ({
+    time,
+    temp: data.hourly.temperature_2m[i],
+    humidity: data.hourly.relative_humidity_2m[i],
+    dewPoint: data.hourly.dew_point_2m[i],
+    precipProb: data.hourly.precipitation_probability?.[i] ?? 0,
+    precip: data.hourly.precipitation?.[i] ?? 0,
+    rain: data.hourly.rain?.[i] ?? 0,
+    showers: data.hourly.showers?.[i] ?? 0,
+    snow: data.hourly.snowfall?.[i] ?? 0,
+    weatherCode: data.hourly.weather_code?.[i] ?? 0,
+  }));
+
+  const daily: DayPoint[] = data.daily.time.map((date: string, i: number) => ({
+    date,
+    tempMax: data.daily.temperature_2m_max[i],
+    tempMin: data.daily.temperature_2m_min[i],
+    precipSum: data.daily.precipitation_sum?.[i] ?? 0,
+    rainSum: data.daily.rain_sum?.[i] ?? 0,
+    showersSum: data.daily.showers_sum?.[i] ?? 0,
+    snowSum: data.daily.snowfall_sum?.[i] ?? 0,
+    precipProbMax: data.daily.precipitation_probability_max?.[i] ?? 0,
+    weatherCode: data.daily.weather_code?.[i] ?? 0,
+  }));
+
+  return {
+    location,
+    fetchedAt: new Date().toISOString(),
+    timezone: data.timezone,
+    hourly,
+    daily,
+  };
+}
+
+function RainBars({ hours }: { hours: HourPoint[] }) {
+  const next = hours.slice(0, 12);
+  return (
+    <div className="rain-bars">
+      {next.map(h => {
+        const height = Math.max(8, Math.min(60, h.precipProb * 0.6));
+        return (
+          <div className="rain-bar-wrap" key={h.time}>
+            <div className="rain-bar" style={{ height }} title={`${h.precipProb}% / ${formatInches(h.precip)}`} />
+            <span>{new Date(h.time).getHours()}</span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function WeatherCard({ data }: { data: WeatherData }) {
+  const current = data.hourly.find(h => new Date(h.time).getTime() >= Date.now()) ?? data.hourly[0];
+  const today = data.daily[0];
+  const risk = precipRisk(today.precipProbMax, today.precipSum, today.snowSum);
+  const nextRain = describeNextRain(data.hourly);
+  const dryWindow = bestDryWindow(data.hourly);
+
+  return (
+    <article className="card">
+      <div className="card-top">
+        <div>
+          <h2><MapPin size={18} /> {data.location.name}</h2>
+          <p className="muted">Updated {new Date(data.fetchedAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</p>
+        </div>
+        <div className={`risk ${risk.level}`}>{risk.label}</div>
+      </div>
+
+      <div className="hero-grid">
+        <div className="hero-number">
+          <span>{f(current.temp)}°</span>
+          <small>{weatherLabel(current.weatherCode)}</small>
+        </div>
+
+        <div className="metric">
+          <Droplets size={18} />
+          <div>
+            <strong>{f(current.dewPoint)}°</strong>
+            <small>Dew point</small>
+          </div>
+        </div>
+
+        <div className="metric">
+          <Umbrella size={18} />
+          <div>
+            <strong>{current.precipProb}%</strong>
+            <small>Now rain risk</small>
+          </div>
+        </div>
+
+        <div className="metric">
+          {today.snowSum > 1 ? <Snowflake size={18} /> : <CloudRain size={18} />}
+          <div>
+            <strong>{formatInches(today.precipSum)}</strong>
+            <small>Today total</small>
+          </div>
+        </div>
+      </div>
+
+      <div className="summary-row">
+        <div>
+          <span>Next</span>
+          <strong>{nextRain}</strong>
+        </div>
+        <div>
+          <span>Best dry window</span>
+          <strong>{dryWindow}</strong>
+        </div>
+        <div>
+          <span>Today</span>
+          <strong>{today.precipProbMax}% · {formatInches(today.precipSum)}</strong>
+        </div>
+      </div>
+
+      <RainBars hours={data.hourly} />
+
+      <div className="daily">
+        {data.daily.slice(0, 5).map(day => {
+          const dayRisk = precipRisk(day.precipProbMax, day.precipSum, day.snowSum);
+          return (
+            <div className="day" key={day.date}>
+              <strong>{new Date(`${day.date}T12:00:00`).toLocaleDateString([], { weekday: 'short' })}</strong>
+              <span>{f(day.tempMax)}°/{f(day.tempMin)}°</span>
+              <span>{day.precipProbMax}%</span>
+              <span>{formatInches(day.precipSum)}</span>
+              <em className={`dot ${dayRisk.level}`}></em>
+            </div>
+          );
+        })}
+      </div>
+    </article>
+  );
+}
+
+function AddLocation({ onAdd }: { onAdd: (loc: Location) => void }) {
+  const [name, setName] = useState('');
+  const [lat, setLat] = useState('');
+  const [lon, setLon] = useState('');
+
+  return (
+    <form className="add-location" onSubmit={(e) => {
+      e.preventDefault();
+      const latitude = Number(lat);
+      const longitude = Number(lon);
+      if (!name.trim() || Number.isNaN(latitude) || Number.isNaN(longitude)) return;
+      onAdd({
+        id: `${name.toLowerCase().replace(/[^a-z0-9]+/g, '-')}-${Date.now()}`,
+        name: name.trim(),
+        latitude,
+        longitude,
+      });
+      setName('');
+      setLat('');
+      setLon('');
+    }}>
+      <input placeholder="Location name" value={name} onChange={e => setName(e.target.value)} />
+      <input placeholder="Latitude" value={lat} onChange={e => setLat(e.target.value)} />
+      <input placeholder="Longitude" value={lon} onChange={e => setLon(e.target.value)} />
+      <button><Plus size={16} /> Add</button>
+    </form>
+  );
+}
 
 function App() {
   const [locations, setLocations] = useState<Location[]>(loadLocations);
-  const [activeIndex, setActiveIndex] = useState(0);
-  const [tab, setTab] = useState<'home'|'hourly'|'locations'|'settings'>('home');
-  const [points, setPoints] = useState<HourlyPoint[]>([]);
+  const [weather, setWeather] = useState<WeatherData[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
-  const [selectedHour, setSelectedHour] = useState(0);
-  const activeLocation = locations[activeIndex] ?? locations[0];
 
-  useEffect(() => saveLocations(locations), [locations]);
+  const sortedWeather = useMemo(() => weather.sort((a, b) => a.location.name.localeCompare(b.location.name)), [weather]);
 
-  useEffect(() => {
-    let cancelled = false;
+  async function refresh() {
     setLoading(true);
     setError('');
-    fetchWeather(activeLocation)
-      .then(data => {
-        if (cancelled) return;
-        setPoints(data);
-        const now = new Date();
-        const idx = data.findIndex(p => new Date(p.time) >= now);
-        setSelectedHour(idx >= 0 ? idx : 0);
-      })
-      .catch(e => !cancelled && setError(e.message || 'Weather failed to load'))
-      .finally(() => !cancelled && setLoading(false));
-    return () => { cancelled = true; };
-  }, [activeLocation.id]);
-
-  const current = points[selectedHour] ?? points[0];
-
-  function updateLocations(next: Location[]) {
-    setLocations(next);
-    if (activeIndex >= next.length) setActiveIndex(Math.max(0, next.length - 1));
+    try {
+      const results = await Promise.all(locations.map(fetchWeather));
+      setWeather(results);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not load weather');
+    } finally {
+      setLoading(false);
+    }
   }
 
-  return <div className="app-shell">
-    <header className="app-header">
-      <div>
-        <p className="eyebrow">Weather Dashboard Pro</p>
-        <h1>{tab === 'home' ? 'Dashboard' : tab[0].toUpperCase() + tab.slice(1)}</h1>
-      </div>
-      <LocationSwitcher locations={locations} activeIndex={activeIndex} setActiveIndex={setActiveIndex} />
-    </header>
+  useEffect(() => {
+    saveLocations(locations);
+    refresh();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [locations]);
 
-    {loading && <div className="notice">Loading latest Open-Meteo forecast…</div>}
-    {error && <div className="notice error">{error}</div>}
-
+  return (
     <main>
-      {tab === 'home' && current && <HomeScreen point={current} points={points} />}
-      {tab === 'hourly' && <HourlyScreen points={points} selectedHour={selectedHour} setSelectedHour={setSelectedHour} />}
-      {tab === 'locations' && <LocationsScreen locations={locations} activeIndex={activeIndex} setActiveIndex={setActiveIndex} updateLocations={updateLocations} />}
-      {tab === 'settings' && <SettingsScreen />}
+      <header className="app-header">
+        <div>
+          <p className="eyebrow"><Sun size={16} /> Weather Dashboard Pro</p>
+          <h1>Now with precipitation planning</h1>
+          <p>Rain risk, daily totals, next-rain timing, and best dry windows for every saved location.</p>
+        </div>
+        <button className="refresh" onClick={refresh} disabled={loading}>
+          <RefreshCw size={17} /> {loading ? 'Loading...' : 'Refresh'}
+        </button>
+      </header>
+
+      <AddLocation onAdd={(loc) => setLocations(prev => [...prev, loc])} />
+
+      {error && <div className="error">{error}</div>}
+
+      <section className="cards">
+        {sortedWeather.map(item => <WeatherCard data={item} key={item.location.id} />)}
+      </section>
+
+      <section className="manage">
+        <h3>Saved locations</h3>
+        {locations.map(loc => (
+          <button key={loc.id} onClick={() => setLocations(prev => prev.filter(x => x.id !== loc.id))}>
+            <Trash2 size={15} /> Remove {loc.name}
+          </button>
+        ))}
+      </section>
+
+      <footer>
+        Weather data from Open-Meteo. Precipitation totals are shown in inches; temperatures are shown in °F.
+      </footer>
     </main>
-
-    <nav className="bottom-nav">
-      <NavButton label="Home" active={tab==='home'} onClick={() => setTab('home')} icon={<Home size={20}/>} />
-      <NavButton label="Hourly" active={tab==='hourly'} onClick={() => setTab('hourly')} icon={<Clock3 size={20}/>} />
-      <NavButton label="Locations" active={tab==='locations'} onClick={() => setTab('locations')} icon={<MapPin size={20}/>} />
-      <NavButton label="Settings" active={tab==='settings'} onClick={() => setTab('settings')} icon={<Settings size={20}/>} />
-    </nav>
-  </div>;
-}
-
-function LocationSwitcher({ locations, activeIndex, setActiveIndex }: { locations: Location[]; activeIndex: number; setActiveIndex: (n: number)=>void }) {
-  const active = locations[activeIndex];
-  return <div className="location-switcher">
-    <button aria-label="Previous location" onClick={() => setActiveIndex((activeIndex - 1 + locations.length) % locations.length)}><ChevronLeft size={18}/></button>
-    <span>📍 {active?.name ?? 'Location'}</span>
-    <button aria-label="Next location" onClick={() => setActiveIndex((activeIndex + 1) % locations.length)}><ChevronRight size={18}/></button>
-  </div>;
-}
-
-function HomeScreen({ point, points }: { point: HourlyPoint; points: HourlyPoint[] }) {
-  const risk = riskFromWetBulb(point.wetBulb);
-  return <section className="stack">
-    <RiskBanner risk={risk} />
-    <div className="hero-card">
-      <div>
-        <p className="muted">Currently</p>
-        <div className="temp">{point.temp}°</div>
-        <p className="feels">Feels like {point.feelsLike}°</p>
-      </div>
-      <div className="best-window">
-        <p>Best Outdoor Window</p>
-        <strong>{findBestOutdoorWindow(points)}</strong>
-      </div>
-    </div>
-    <div className="metric-grid">
-      <Metric label="Wet Bulb" value={`${point.wetBulb}°`} />
-      <Metric label="Dewpoint" value={`${point.dewpoint}°`} />
-      <Metric label="Wind" value={`${formatWindDirection(point.windDirection)} ${point.windSpeed} mph`} />
-      <Metric label="UV" value={`${point.uv}`} />
-      <Metric label="Humidity" value={`${point.humidity}%`} />
-      <Metric label="AQI" value={point.aqi != null ? `${point.aqi}` : '—'} />
-    </div>
-    <WhyCard point={point} />
-  </section>;
-}
-
-function RiskBanner({ risk }: { risk: RiskLevel }) {
-  return <div className={`risk-banner risk-${risk}`}><span>{riskIcon(risk)}</span><strong>{riskLabel(risk)}</strong></div>;
-}
-
-function Metric({ label, value }: { label: string; value: string }) {
-  return <div className="metric-card"><span>{label}</span><strong>{value}</strong></div>;
-}
-
-function WhyCard({ point }: { point: HourlyPoint }) {
-  const reasons = [];
-  if (point.wetBulb >= 78) reasons.push(`Wet bulb is elevated at ${point.wetBulb}°`);
-  if (point.uv >= 8) reasons.push(`UV index is very high at ${point.uv}`);
-  if (point.windSpeed <= 5) reasons.push(`Wind is light at ${point.windSpeed} mph`);
-  if (point.dewpoint >= 68) reasons.push(`Dewpoint is muggy at ${point.dewpoint}°`);
-  if (!reasons.length) reasons.push('Wet bulb, UV, dewpoint, and wind are all in a manageable range.');
-  return <details className="why-card"><summary>Why this status?</summary>{reasons.map(r => <p key={r}>✓ {r}</p>)}</details>;
-}
-
-function HourlyScreen({ points, selectedHour, setSelectedHour }: { points: HourlyPoint[]; selectedHour: number; setSelectedHour: (n: number)=>void }) {
-  const [metric, setMetric] = useState<ChartMetric>('wetBulb');
-  const today = useMemo(() => points.slice(0, 24), [points]);
-  const selected = points[selectedHour] ?? today[0];
-  if (!points.length) return <div className="notice">No hourly data yet.</div>;
-  return <section className="stack">
-    <h2>Today's Timeline</h2>
-    <div className="timeline">{today.map((p, i) => <button key={p.time} onClick={() => setSelectedHour(i)} className={i === selectedHour ? 'selected' : ''}><span>{riskIcon(riskFromWetBulb(p.wetBulb))}</span><small>{hourLabel(p.time)}</small></button>)}</div>
-    <div className="chart-picker">{(Object.keys(chartLabels) as ChartMetric[]).map(k => <button key={k} className={metric===k ? 'active' : ''} onClick={() => setMetric(k)}>{chartLabels[k]}</button>)}</div>
-    <SimpleChart points={today} metric={metric} selectedIndex={Math.min(selectedHour, 23)} onSelect={setSelectedHour} />
-    {selected && <div className="selected-hour-card">
-      <h2>{fullHourLabel(selected.time)}</h2>
-      <div className="metric-grid compact">
-        <Metric label="Temp" value={`${selected.temp}°`} />
-        <Metric label="Feels" value={`${selected.feelsLike}°`} />
-        <Metric label="Wet Bulb" value={`${selected.wetBulb}°`} />
-        <Metric label="Dewpoint" value={`${selected.dewpoint}°`} />
-        <Metric label="Wind" value={`${selected.windSpeed} mph`} />
-        <Metric label="UV" value={`${selected.uv}`} />
-      </div>
-    </div>}
-  </section>;
-}
-
-function SimpleChart({ points, metric, selectedIndex, onSelect }: { points: HourlyPoint[]; metric: ChartMetric; selectedIndex: number; onSelect: (n: number)=>void }) {
-  const values = points.map(p => p[metric] as number);
-  const min = Math.min(...values);
-  const max = Math.max(...values);
-  const width = 680, height = 220, pad = 28;
-  const coords = values.map((v, i) => {
-    const x = pad + i * ((width - pad * 2) / Math.max(1, values.length - 1));
-    const y = height - pad - ((v - min) / Math.max(1, max - min)) * (height - pad * 2);
-    return [x, y] as const;
-  });
-  const d = coords.map(([x,y], i) => `${i ? 'L' : 'M'} ${x} ${y}`).join(' ');
-  const selected = coords[selectedIndex] ?? coords[0];
-  return <div className="chart-card">
-    <div className="chart-title"><strong>{chartLabels[metric]}</strong><span>{values[selectedIndex]}{metric === 'humidity' ? '%' : metric === 'windSpeed' ? ' mph' : metric === 'uv' ? '' : '°'}</span></div>
-    <svg viewBox={`0 0 ${width} ${height}`} role="img" aria-label={`${chartLabels[metric]} hourly chart`}>
-      <line x1={pad} y1={height-pad} x2={width-pad} y2={height-pad} className="axis" />
-      <path d={d} className="line" />
-      {coords.map(([x,y], i) => <circle key={i} cx={x} cy={y} r={i===selectedIndex ? 6 : 3} className={i===selectedIndex ? 'dot selected-dot' : 'dot'} onClick={() => onSelect(i)} />)}
-      {selected && <line x1={selected[0]} y1={pad} x2={selected[0]} y2={height-pad} className="selector" />}
-    </svg>
-  </div>;
-}
-
-function LocationsScreen({ locations, activeIndex, setActiveIndex, updateLocations }: { locations: Location[]; activeIndex: number; setActiveIndex: (n:number)=>void; updateLocations: (l:Location[])=>void }) {
-  const [query, setQuery] = useState('');
-  const [results, setResults] = useState<Location[]>([]);
-  const [searching, setSearching] = useState(false);
-  async function runSearch() {
-    if (query.trim().length < 2) return;
-    setSearching(true);
-    try { setResults(await searchLocations(query)); } finally { setSearching(false); }
-  }
-  return <section className="stack">
-    <div className="search-row"><input value={query} onChange={e => setQuery(e.target.value)} onKeyDown={e => e.key === 'Enter' && runSearch()} placeholder="Search city or place" /><button onClick={runSearch}><Search size={18}/> Search</button></div>
-    {searching && <p className="muted">Searching…</p>}
-    {results.map(r => <div className="location-row" key={r.id}><div><strong>{r.name}</strong><p>{[r.admin1, r.country].filter(Boolean).join(', ')}</p></div><button onClick={() => updateLocations([...locations, { ...r, id: `${r.id}-${Date.now()}` }])}><Plus size={18}/> Add</button></div>)}
-    <h2>Saved Locations</h2>
-    {locations.map((l, i) => <div className={`location-row ${i===activeIndex ? 'active-location' : ''}`} key={l.id} onClick={() => setActiveIndex(i)}><div><strong>{l.name}</strong><p>{[l.admin1, l.country].filter(Boolean).join(', ')}</p></div>{locations.length > 1 && <button className="ghost" onClick={(e) => { e.stopPropagation(); updateLocations(locations.filter((_, idx) => idx !== i)); }}><Trash2 size={18}/></button>}</div>)}
-  </section>;
-}
-
-function SettingsScreen() {
-  return <section className="stack"><div className="settings-card"><h2>Settings</h2><p>V4 uses °F, mph, and 12-hour time by default.</p><p className="muted">Future: unit toggles, notifications, personal thresholds, dark-mode toggle, and Coach Mode.</p></div><div className="settings-card"><h2>Data</h2><p>Forecast and air quality data are fetched directly from Open-Meteo in the browser. Saved locations are stored locally on this device.</p></div></section>;
-}
-
-function NavButton({ label, active, onClick, icon }: { label: string; active: boolean; onClick: ()=>void; icon: React.ReactNode }) {
-  return <button className={active ? 'active' : ''} onClick={onClick}>{icon}<span>{label}</span></button>;
+  );
 }
 
 createRoot(document.getElementById('root')!).render(<App />);
