@@ -1,17 +1,21 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import {
-  Cloud,
+  Bike,
   CloudRain,
   Droplets,
+  Fish,
   Gauge,
   MapPin,
   Plus,
   RefreshCw,
+  ShieldAlert,
   Snowflake,
+  Sparkles,
   Sun,
   Thermometer,
   Trash2,
+  Trophy,
   Umbrella,
   Waves,
   Wind
@@ -33,6 +37,7 @@ type HourPoint = {
   apparentC: number;
   windMph: number;
   cloudCover: number;
+  uvIndex: number;
   precipProb: number;
   precipMm: number;
   rainMm: number;
@@ -45,6 +50,7 @@ type DayPoint = {
   date: string;
   tempMaxC: number;
   tempMinC: number;
+  uvIndexMax: number;
   precipSumMm: number;
   rainSumMm: number;
   showersSumMm: number;
@@ -61,7 +67,7 @@ type WeatherData = {
   daily: DayPoint[];
 };
 
-const APP_VERSION = 'v5.0.0';
+const APP_VERSION = 'v5.1.0';
 
 const DEFAULT_LOCATIONS: Location[] = [
   { id: 'groton-ma', name: 'Groton, MA', latitude: 42.6112, longitude: -71.5745 },
@@ -69,7 +75,7 @@ const DEFAULT_LOCATIONS: Location[] = [
   { id: 'cuttyhunk-ma', name: 'Cuttyhunk, MA', latitude: 41.4251, longitude: -70.9267 }
 ];
 
-const STORAGE_KEY = 'weather-dashboard-pro-locations-v5';
+const STORAGE_KEY = 'weather-dashboard-pro-locations-v51';
 
 function loadLocations(): Location[] {
   try {
@@ -102,7 +108,7 @@ function formatSnowFromCm(cm: number) {
   return `${inches.toFixed(1)}"`;
 }
 
-// Stull wet-bulb approximation. Good for dashboard planning guidance.
+// Stull wet-bulb approximation. Good for planning guidance.
 function wetBulbC(tempC: number, rh: number) {
   const t = tempC;
   const r = Math.max(1, Math.min(100, rh));
@@ -113,6 +119,33 @@ function wetBulbC(tempC: number, rh: number) {
     0.00391838 * Math.pow(r, 1.5) * Math.atan(0.023101 * r) -
     4.686035
   );
+}
+
+function weatherLabel(code: number) {
+  if (code === 0) return 'Clear';
+  if ([1, 2, 3].includes(code)) return 'Clouds';
+  if ([45, 48].includes(code)) return 'Fog';
+  if ([51, 53, 55, 56, 57].includes(code)) return 'Drizzle';
+  if ([61, 63, 65, 66, 67, 80, 81, 82].includes(code)) return 'Rain';
+  if ([71, 73, 75, 77, 85, 86].includes(code)) return 'Snow';
+  if ([95, 96, 99].includes(code)) return 'Storms';
+  return 'Weather';
+}
+
+function weatherIcon(code: number) {
+  if ([61, 63, 65, 66, 67, 80, 81, 82, 51, 53, 55, 56, 57].includes(code)) return '🌧';
+  if ([71, 73, 75, 77, 85, 86].includes(code)) return '❄️';
+  if ([95, 96, 99].includes(code)) return '⛈';
+  if ([1, 2, 3, 45, 48].includes(code)) return '☁️';
+  return '☀️';
+}
+
+function currentHour(hours: HourPoint[]) {
+  return hours.find(h => new Date(h.time).getTime() >= Date.now()) ?? hours[0];
+}
+
+function upcomingHours(hours: HourPoint[], count = 12) {
+  return hours.filter(h => new Date(h.time).getTime() >= Date.now()).slice(0, count);
 }
 
 function comfortCategory(wetBulbF: number, dewF: number, tempF: number) {
@@ -129,23 +162,40 @@ function precipRisk(prob: number, amountMm: number, snowCm: number) {
   return { label: 'Mostly dry', level: 'good' };
 }
 
-function weatherLabel(code: number) {
-  if (code === 0) return 'Clear';
-  if ([1, 2, 3].includes(code)) return 'Clouds';
-  if ([45, 48].includes(code)) return 'Fog';
-  if ([51, 53, 55, 56, 57].includes(code)) return 'Drizzle';
-  if ([61, 63, 65, 66, 67, 80, 81, 82].includes(code)) return 'Rain';
-  if ([71, 73, 75, 77, 85, 86].includes(code)) return 'Snow';
-  if ([95, 96, 99].includes(code)) return 'Storms';
-  return 'Weather';
+function stormRisk(hours: HourPoint[]) {
+  return upcomingHours(hours, 12).some(h => [95, 96, 99].includes(h.weatherCode));
 }
 
-function currentHour(hours: HourPoint[]) {
-  return hours.find(h => new Date(h.time).getTime() >= Date.now()) ?? hours[0];
-}
+function outdoorScore(current: HourPoint, today: DayPoint) {
+  let score = 100;
+  const tempF = f(current.tempC);
+  const dewF = f(current.dewPointC);
+  const wbF = f(wetBulbC(current.tempC, current.humidity));
 
-function upcomingHours(hours: HourPoint[], count = 12) {
-  return hours.filter(h => new Date(h.time).getTime() >= Date.now()).slice(0, count);
+  if (today.precipProbMax >= 80) score -= 22;
+  else if (today.precipProbMax >= 60) score -= 14;
+  else if (today.precipProbMax >= 40) score -= 7;
+
+  if (today.precipSumMm >= 8) score -= 22;
+  else if (today.precipSumMm >= 4) score -= 13;
+  else if (today.precipSumMm >= 1) score -= 6;
+
+  if (today.snowSumCm > 2) score -= 18;
+  if ([95, 96, 99].includes(current.weatherCode)) score -= 30;
+
+  if (wbF >= 84 || tempF >= 95) score -= 25;
+  else if (wbF >= 78 || dewF >= 72 || tempF >= 88) score -= 14;
+  else if (dewF >= 65) score -= 6;
+
+  if (current.windMph >= 25) score -= 16;
+  else if (current.windMph >= 18) score -= 9;
+
+  if (current.uvIndex >= 8) score -= 8;
+
+  score = Math.max(0, Math.min(100, Math.round(score)));
+  const level = score >= 85 ? 'good' : score >= 68 ? 'medium' : score >= 45 ? 'watch' : 'danger';
+  const label = score >= 85 ? 'Excellent' : score >= 68 ? 'Good' : score >= 45 ? 'Marginal' : 'Poor';
+  return { score, level, label };
 }
 
 function describeNextPrecip(hours: HourPoint[]) {
@@ -156,6 +206,13 @@ function describeNextPrecip(hours: HourPoint[]) {
   const diffHours = Math.max(0, Math.round((new Date(next.time).getTime() - Date.now()) / 36e5));
   const kind = next.snowCm >= 0.5 ? 'Snow' : 'Rain';
   return diffHours <= 1 ? `${kind} possible soon` : `${kind} possible in ~${diffHours} hours`;
+}
+
+function heaviestPrecipWindow(hours: HourPoint[]) {
+  const next = upcomingHours(hours, 24);
+  const max = next.reduce((best, h) => (h.precipMm > best.precipMm ? h : best), next[0]);
+  if (!max || max.precipMm < 0.5) return 'No meaningful peak';
+  return `${new Date(max.time).toLocaleTimeString([], { hour: 'numeric' })} · ${formatInchesFromMm(max.precipMm)}`;
 }
 
 function bestDryWindow(hours: HourPoint[]) {
@@ -190,13 +247,51 @@ function bestDryWindow(hours: HourPoint[]) {
   return `${start.toLocaleTimeString([], opts)}–${end.toLocaleTimeString([], opts)}`;
 }
 
-function activitySuggestion(current: HourPoint, today: DayPoint) {
+function activityGuidance(current: HourPoint, today: DayPoint, hours: HourPoint[]) {
+  const score = outdoorScore(current, today).score;
   const wbF = f(wetBulbC(current.tempC, current.humidity));
-  if (today.snowSumCm > 1) return 'Snow gear / extra travel time';
-  if (today.precipProbMax >= 70 || today.precipSumMm >= 4) return 'Bring rain gear';
-  if (wbF >= 78 || f(current.dewPointC) >= 72) return 'Hydrate and take breaks';
-  if (current.windMph >= 18) return 'Windy conditions';
-  return 'Good general outdoor window';
+  const wet = today.precipProbMax >= 60 || today.precipSumMm >= 3;
+  const windy = current.windMph >= 18;
+  const storm = stormRisk(hours);
+
+  return [
+    {
+      icon: '🚶',
+      label: 'Walking',
+      status: score >= 70 && !storm ? 'Good' : score >= 45 ? 'OK with caution' : 'Not ideal',
+      detail: wet ? 'Watch for wet windows' : wbF >= 78 ? 'Hydrate and shorten route' : 'Good general window'
+    },
+    {
+      icon: '🏒',
+      label: 'Hockey travel',
+      status: wet || today.snowSumCm > 1 ? 'Allow extra time' : 'Normal',
+      detail: today.snowSumCm > 1 ? 'Snow may slow travel' : wet ? 'Rain may affect roads' : 'No major weather travel issue'
+    },
+    {
+      icon: '⚽',
+      label: "Kids' sports",
+      status: storm ? 'Watch storms' : wet ? 'Check fields' : score >= 70 ? 'Good' : 'Manage heat',
+      detail: storm ? 'Lightning risk possible' : wet ? 'Wet fields possible' : wbF >= 78 ? 'Extra water breaks' : 'Good outdoor setup'
+    },
+    {
+      icon: '🌱',
+      label: 'Yard work',
+      status: wet ? 'Limited' : windy ? 'Windy' : score >= 68 ? 'Good' : 'Caution',
+      detail: wet ? 'Best after dry window' : windy ? 'Avoid light debris work' : 'Good for outdoor tasks'
+    },
+    {
+      icon: '🏖',
+      label: 'Beach',
+      status: wet || windy ? 'Mixed' : score >= 70 ? 'Good' : 'Caution',
+      detail: current.uvIndex >= 7 ? 'High UV protection needed' : windy ? 'Breezy by the water' : 'Comfort depends on cloud cover'
+    },
+    {
+      icon: '🎣',
+      label: 'Fishing',
+      status: storm ? 'Avoid storms' : windy ? 'Wind factor' : wet ? 'Rain gear' : 'Good',
+      detail: storm ? 'Lightning risk possible' : windy ? 'Choppy/exposed areas' : 'Check local marine details'
+    }
+  ];
 }
 
 async function fetchWeather(location: Location): Promise<WeatherData> {
@@ -214,6 +309,7 @@ async function fetchWeather(location: Location): Promise<WeatherData> {
       'apparent_temperature',
       'wind_speed_10m',
       'cloud_cover',
+      'uv_index',
       'precipitation_probability',
       'precipitation',
       'rain',
@@ -224,6 +320,7 @@ async function fetchWeather(location: Location): Promise<WeatherData> {
     daily: [
       'temperature_2m_max',
       'temperature_2m_min',
+      'uv_index_max',
       'precipitation_sum',
       'rain_sum',
       'showers_sum',
@@ -245,6 +342,7 @@ async function fetchWeather(location: Location): Promise<WeatherData> {
     apparentC: data.hourly.apparent_temperature[i],
     windMph: data.hourly.wind_speed_10m[i],
     cloudCover: data.hourly.cloud_cover[i],
+    uvIndex: data.hourly.uv_index?.[i] ?? 0,
     precipProb: data.hourly.precipitation_probability?.[i] ?? 0,
     precipMm: data.hourly.precipitation?.[i] ?? 0,
     rainMm: data.hourly.rain?.[i] ?? 0,
@@ -257,6 +355,7 @@ async function fetchWeather(location: Location): Promise<WeatherData> {
     date,
     tempMaxC: data.daily.temperature_2m_max[i],
     tempMinC: data.daily.temperature_2m_min[i],
+    uvIndexMax: data.daily.uv_index_max?.[i] ?? 0,
     precipSumMm: data.daily.precipitation_sum?.[i] ?? 0,
     rainSumMm: data.daily.rain_sum?.[i] ?? 0,
     showersSumMm: data.daily.showers_sum?.[i] ?? 0,
@@ -268,7 +367,21 @@ async function fetchWeather(location: Location): Promise<WeatherData> {
   return { location, fetchedAt: new Date().toISOString(), timezone: data.timezone, hourly, daily };
 }
 
-function RainBars({ hours }: { hours: HourPoint[] }) {
+function OutdoorScoreCard({ current, today }: { current: HourPoint; today: DayPoint }) {
+  const score = outdoorScore(current, today);
+  return (
+    <section className={`score-card ${score.level}`}>
+      <div>
+        <p>Outdoor Score</p>
+        <strong>{score.score}</strong>
+        <span>{score.label}</span>
+      </div>
+      <Trophy size={36} />
+    </section>
+  );
+}
+
+function RainTimeline({ hours }: { hours: HourPoint[] }) {
   const next = upcomingHours(hours, 12);
   return (
     <div className="rain-bars">
@@ -285,27 +398,53 @@ function RainBars({ hours }: { hours: HourPoint[] }) {
   );
 }
 
-function HourlyTable({ hours }: { hours: HourPoint[] }) {
+function HourlyCards({ hours }: { hours: HourPoint[] }) {
   const next = upcomingHours(hours, 12);
   return (
-    <div className="hourly-table">
-      <div className="hourly-head">
-        <span>Time</span><span>Temp</span><span>Dew</span><span>WB</span><span>Rain</span><span>Amt</span><span>Wind</span>
-      </div>
+    <div className="hourly-cards">
       {next.map(h => {
         const wbF = f(wetBulbC(h.tempC, h.humidity));
         return (
-          <div className="hourly-row" key={h.time}>
-            <span>{new Date(h.time).toLocaleTimeString([], { hour: 'numeric' })}</span>
-            <strong>{f(h.tempC)}°</strong>
-            <span>{f(h.dewPointC)}°</span>
-            <span>{wbF}°</span>
-            <span>{h.precipProb}%</span>
-            <span>{h.snowCm >= 0.5 ? formatSnowFromCm(h.snowCm) : formatInchesFromMm(h.precipMm)}</span>
-            <span>{Math.round(h.windMph)} mph</span>
-          </div>
+          <article className="hour-card" key={h.time}>
+            <div className="hour-card-head">
+              <div>
+                <strong>{new Date(h.time).toLocaleTimeString([], { hour: 'numeric' })}</strong>
+                <span>{weatherIcon(h.weatherCode)} {weatherLabel(h.weatherCode)}</span>
+              </div>
+              <em>{f(h.tempC)}°</em>
+            </div>
+
+            <div className="hour-card-grid">
+              <div><span>Temp</span><strong>{f(h.tempC)}°</strong></div>
+              <div><span>Feels Like</span><strong>{f(h.apparentC)}°</strong></div>
+              <div><span>Dew Point</span><strong>{f(h.dewPointC)}°</strong></div>
+              <div><span>Wet Bulb</span><strong>{wbF}°</strong></div>
+              <div><span>Humidity</span><strong>{h.humidity}%</strong></div>
+              <div><span>Rain Chance</span><strong>{h.precipProb}%</strong></div>
+              <div><span>Amount</span><strong>{h.snowCm >= 0.5 ? formatSnowFromCm(h.snowCm) : formatInchesFromMm(h.precipMm)}</strong></div>
+              <div><span>Wind</span><strong>{Math.round(h.windMph)} mph</strong></div>
+            </div>
+          </article>
         );
       })}
+    </div>
+  );
+}
+
+function ActivityPlanner({ current, today, hours }: { current: HourPoint; today: DayPoint; hours: HourPoint[] }) {
+  const items = activityGuidance(current, today, hours);
+  return (
+    <div className="activity-grid">
+      {items.map(item => (
+        <div className="activity" key={item.label}>
+          <span className="activity-icon">{item.icon}</span>
+          <div>
+            <strong>{item.label}</strong>
+            <em>{item.status}</em>
+            <p>{item.detail}</p>
+          </div>
+        </div>
+      ))}
     </div>
   );
 }
@@ -316,7 +455,7 @@ function WeatherCard({ data }: { data: WeatherData }) {
   const wbF = f(wetBulbC(now.tempC, now.humidity));
   const comfort = comfortCategory(wbF, f(now.dewPointC), f(now.tempC));
   const rainRisk = precipRisk(today.precipProbMax, today.precipSumMm, today.snowSumCm);
-  const suggestion = activitySuggestion(now, today);
+  const hasStorm = stormRisk(data.hourly);
 
   return (
     <article className="card">
@@ -328,13 +467,16 @@ function WeatherCard({ data }: { data: WeatherData }) {
         <div className="badges">
           <span className={`badge ${comfort.level}`}>{comfort.label}</span>
           <span className={`badge ${rainRisk.level}`}>{rainRisk.label}</span>
+          {hasStorm && <span className="badge danger">Storm risk</span>}
         </div>
       </div>
+
+      <OutdoorScoreCard current={now} today={today} />
 
       <div className="hero-grid">
         <div className="hero-number">
           <span>{f(now.tempC)}°</span>
-          <small>{weatherLabel(now.weatherCode)} · feels {f(now.apparentC)}°</small>
+          <small>{weatherIcon(now.weatherCode)} {weatherLabel(now.weatherCode)} · feels {f(now.apparentC)}°</small>
         </div>
 
         <div className="metric">
@@ -363,6 +505,11 @@ function WeatherCard({ data }: { data: WeatherData }) {
         </div>
 
         <div className="metric">
+          <Sun size={18} />
+          <div><strong>{now.uvIndex.toFixed(1)}</strong><small>UV Index</small></div>
+        </div>
+
+        <div className="metric">
           {today.snowSumCm > 1 ? <Snowflake size={18} /> : <CloudRain size={18} />}
           <div><strong>{today.snowSumCm > 1 ? formatSnowFromCm(today.snowSumCm) : formatInchesFromMm(today.precipSumMm)}</strong><small>Today total</small></div>
         </div>
@@ -371,24 +518,29 @@ function WeatherCard({ data }: { data: WeatherData }) {
       <div className="summary-row">
         <div><span>Next precip</span><strong>{describeNextPrecip(data.hourly)}</strong></div>
         <div><span>Best dry window</span><strong>{bestDryWindow(data.hourly)}</strong></div>
+        <div><span>Heaviest precip</span><strong>{heaviestPrecipWindow(data.hourly)}</strong></div>
         <div><span>Today chance</span><strong>{today.precipProbMax}%</strong></div>
-        <div><span>Outdoor note</span><strong>{suggestion}</strong></div>
         <div><span>Cloud cover</span><strong>{Math.round(now.cloudCover)}%</strong></div>
         <div><span>Today high/low</span><strong>{f(today.tempMaxC)}° / {f(today.tempMinC)}°</strong></div>
       </div>
 
       <section className="panel">
-        <h3>Next 12 hours rain risk</h3>
-        <RainBars hours={data.hourly} />
+        <h3><CloudRain size={16} /> Rain Timeline</h3>
+        <RainTimeline hours={data.hourly} />
       </section>
 
       <section className="panel">
-        <h3>Hourly details</h3>
-        <HourlyTable hours={data.hourly} />
+        <h3><Sparkles size={16} /> Activity Recommendations</h3>
+        <ActivityPlanner current={now} today={today} hours={data.hourly} />
       </section>
 
       <section className="panel">
-        <h3>5-day outlook</h3>
+        <h3><Gauge size={16} /> Hourly Planner</h3>
+        <HourlyCards hours={data.hourly} />
+      </section>
+
+      <section className="panel">
+        <h3><ShieldAlert size={16} /> 5-Day Outlook</h3>
         <div className="daily">
           {data.daily.slice(0, 5).map(day => {
             const dayRisk = precipRisk(day.precipProbMax, day.precipSumMm, day.snowSumCm);
@@ -396,9 +548,10 @@ function WeatherCard({ data }: { data: WeatherData }) {
               <div className="day" key={day.date}>
                 <strong>{new Date(`${day.date}T12:00:00`).toLocaleDateString([], { weekday: 'short' })}</strong>
                 <span>{f(day.tempMaxC)}°/{f(day.tempMinC)}°</span>
-                <span>{weatherLabel(day.weatherCode)}</span>
+                <span>{weatherIcon(day.weatherCode)} {weatherLabel(day.weatherCode)}</span>
                 <span>{day.precipProbMax}%</span>
                 <span>{day.snowSumCm > 1 ? formatSnowFromCm(day.snowSumCm) : formatInchesFromMm(day.precipSumMm)}</span>
+                <span>UV {day.uvIndexMax.toFixed(1)}</span>
                 <em className={`dot ${dayRisk.level}`}></em>
               </div>
             );
@@ -473,8 +626,8 @@ function App() {
       <header className="app-header">
         <div>
           <p className="eyebrow"><Sun size={16} /> Weather Dashboard Pro <span>{APP_VERSION}</span></p>
-          <h1>Heat, humidity, wet bulb, hourly weather, and precipitation planning.</h1>
-          <p>Track comfort, dew point, wet bulb, rain/snow risk, hourly details, best dry windows, and 5-day outlooks for saved locations.</p>
+          <h1>Weather planning, not just weather watching.</h1>
+          <p>Track comfort, dew point, wet bulb, UV, precipitation timing, best dry windows, outdoor score, and activity guidance for saved locations.</p>
         </div>
         <button className="refresh" onClick={refresh} disabled={loading}>
           <RefreshCw size={17} /> {loading ? 'Loading...' : 'Refresh'}
@@ -499,7 +652,7 @@ function App() {
       </section>
 
       <footer>
-        Weather data from Open-Meteo. Wet bulb uses an approximate formula for planning guidance. {APP_VERSION}
+        Weather data from Open-Meteo. Wet bulb and Outdoor Score are planning guidance, not safety guarantees. {APP_VERSION}
       </footer>
     </main>
   );

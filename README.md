@@ -1,36 +1,30 @@
-# Weather Dashboard Pro v5
+# Weather Dashboard Pro v5.1
 
-Weather Dashboard Pro v5 adds precipitation planning while preserving the original dashboard-style weather features.
+A phone-friendly weather planning dashboard for saved locations.
 
-## Included
+## v5.1 Highlights
 
-- Current temperature and feels-like temperature
-- Dew point
-- Relative humidity
-- Wet bulb approximation
-- Wind speed
-- Cloud cover
-- Precipitation probability
-- Rain/snow amount
-- Next precipitation timing
+- Labeled hourly forecast cards
+- Outdoor Score
+- Rain timeline
 - Best dry window
-- Hourly detail table
-- 5-day outlook
-- GitHub Pages workflow
-- McCann Apps-style icons
+- Current conditions
+- Dew point and wet bulb
+- Wind, humidity, cloud cover
+- UV Index
+- Activity guidance for walking, kids' sports, yard work, beach, biking, fishing, and hockey travel
+- GitHub Pages workflow configured for `weather-dashboard-pro`
 
-## Deploy
+## Important dependency note
 
-Repository name should be:
+This package intentionally does **not** include `package-lock.json`.
 
-```txt
-weather-dashboard-pro
+Reason: a previous lock file was generated through an internal package mirror and caused GitHub Actions to try downloading from the wrong registry. The included workflow uses:
+
+```bash
+npm install --registry=https://registry.npmjs.org/
 ```
 
-GitHub Pages source should be set to:
+and does not enable npm cache, so it will not require a lock file.
 
-```txt
-GitHub Actions
-```
-
-Then push to `main`.
+After GitHub successfully installs once, you may generate a clean lock file locally if you want, but it is not required for deployment.

@@ -28,7 +28,11 @@ jobs:
           node-version: 24
 
       - name: Configure npm registry
-        run: npm config set registry https://registry.npmjs.org/
+        run: |
+          npm config set registry https://registry.npmjs.org/
+          npm config set fetch-retries 5
+          npm config set fetch-retry-factor 2
+          npm config set fetch-timeout 120000
 
       - name: Install dependencies
         run: npm install --registry=https://registry.npmjs.org/
