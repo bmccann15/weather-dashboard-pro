@@ -2,8 +2,7 @@ name: Deploy Weather Dashboard Pro
 
 on:
   push:
-    branches:
-      - main
+    branches: [ main ]
   workflow_dispatch:
 
 permissions:
@@ -27,15 +26,9 @@ jobs:
         uses: actions/setup-node@v5
         with:
           node-version: 24
-          cache: npm
-          registry-url: https://registry.npmjs.org
 
-      - name: Configure npm
-        run: |
-          npm config set registry https://registry.npmjs.org/
-          npm config set fetch-retries 5
-          npm config set fetch-retry-factor 2
-          npm config set fetch-timeout 120000
+      - name: Configure npm registry
+        run: npm config set registry https://registry.npmjs.org/
 
       - name: Install dependencies
         run: npm install --registry=https://registry.npmjs.org/
