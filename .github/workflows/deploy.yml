@@ -20,21 +20,27 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v5
+
       - name: Setup Node
         uses: actions/setup-node@v5
         with:
           node-version: 24
           cache: npm
+
       - name: Install dependencies
-        run: npm install --fetch-retries=5 --fetch-retry-factor=2
+        run: npm ci --fetch-retries=5 --fetch-retry-factor=2
+
       - name: Build
         run: npm run build
+
       - name: Configure Pages
         uses: actions/configure-pages@v5
+
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v4
         with:
           path: ./dist
+
   deploy:
     environment:
       name: github-pages

@@ -1,36 +1,36 @@
-# Weather Dashboard Pro v4
+# Weather Dashboard Pro v5
 
-A GitHub-ready React + TypeScript weather dashboard using Open-Meteo.
+Weather Dashboard Pro v5 adds precipitation planning while preserving the original dashboard-style weather features.
 
-## Features
+## Included
 
-- Saved multi-location dashboard
-- Traffic-light heat stress banner based on wet bulb temperature
-- Current conditions cards
-- Best outdoor window finder
-- Hourly timeline
-- Interactive hourly charts
-- Location search using Open-Meteo geocoding
-- Local storage for saved locations and settings
+- Current temperature and feels-like temperature
+- Dew point
+- Relative humidity
+- Wet bulb approximation
+- Wind speed
+- Cloud cover
+- Precipitation probability
+- Rain/snow amount
+- Next precipitation timing
+- Best dry window
+- Hourly detail table
+- 5-day outlook
+- GitHub Pages workflow
+- McCann Apps-style icons
 
-## Run locally
+## Deploy
 
-```bash
-npm install
-npm run dev
+Repository name should be:
+
+```txt
+weather-dashboard-pro
 ```
 
-## Build
+GitHub Pages source should be set to:
 
-```bash
-npm run build
+```txt
+GitHub Actions
 ```
 
-## Deploy to GitHub Pages
-
-1. Push this project to a GitHub repository.
-2. In the repo, go to **Settings → Pages**.
-3. Choose GitHub Actions as the source.
-4. Add a workflow that runs `npm ci && npm run build` and publishes the `dist` folder.
-
-For a simpler route, deploy the repo through Netlify and set the build command to `npm run build` and publish directory to `dist`.
+Then push to `main`.

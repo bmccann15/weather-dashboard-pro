@@ -2,6 +2,7 @@
   "name": "Weather Dashboard Pro",
   "short_name": "Weather Pro",
   "start_url": "/weather-dashboard-pro/",
+  "scope": "/weather-dashboard-pro/",
   "display": "standalone",
   "background_color": "#0f172a",
   "theme_color": "#0f172a",
@@ -17,10 +18,10 @@
       "type": "image/png"
     },
     {
-      "src": "/weather-dashboard-pro/icon-512.png",
+      "src": "/weather-dashboard-pro/maskable-icon-512.png",
       "sizes": "512x512",
       "type": "image/png",
-      "purpose": "any maskable"
+      "purpose": "maskable"
     }
   ]
 }
